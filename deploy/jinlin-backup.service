@@ -1,0 +1,15 @@
+[Unit]
+Description=Backup Jinlin database and private media
+
+[Service]
+Type=oneshot
+User=jinlin
+Group=jinlin
+WorkingDirectory=/opt/jinlin
+EnvironmentFile=/etc/jinlin.env
+ExecStart=/opt/node24/bin/node /opt/jinlin/scripts/backup.mjs /var/backups/jinlin
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/jinlin /var/backups/jinlin

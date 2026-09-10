@@ -1,0 +1,24 @@
+[Unit]
+Description=Jinlin Childcare Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=jinlin
+Group=jinlin
+WorkingDirectory=/opt/jinlin
+EnvironmentFile=/etc/jinlin.env
+ExecStart=/opt/node24/bin/node /opt/jinlin/server/main.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/jinlin
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
