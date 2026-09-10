@@ -18,8 +18,8 @@ test('browser preview and stored agreement apply identical single-pass substitut
 test('version 1 databases migrate without modifying stored policy documents',()=>{
   const dir=mkdtempSync(join(tmpdir(),'jinlin-migration-'));
   try{
-    let db=openDatabase(dir);db.exec('ALTER TABLE appointments DROP COLUMN signed_documents; PRAGMA user_version=1;');db.close();
-    db=openDatabase(dir);assert.equal(db.prepare('PRAGMA user_version').get().user_version,2);
+    let db=openDatabase(dir);db.exec('DROP TABLE morning_requests; DROP TABLE morning_versions; ALTER TABLE media DROP COLUMN purpose; ALTER TABLE appointments DROP COLUMN signed_documents; PRAGMA user_version=1;');db.close();
+    db=openDatabase(dir);assert.equal(db.prepare('PRAGMA user_version').get().user_version,3);
     assert.ok(db.prepare('PRAGMA table_info(appointments)').all().some(c=>c.name==='signed_documents'));db.close();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
@@ -28,4 +28,20 @@ test('public resource count stays fixed and unreviewed instructions remain serve
   assert.equal(vm.runInContext('ARTICLES.length',context),7);assert.equal(vm.runInContext('RESOURCES.length',context),6);
   assert.equal(vm.runInContext('MATERIAL_CONTENT.chapters.length',context),3);
   assert.ok(!readFileSync(new URL('../public/material-content.js',import.meta.url),'utf8').includes('饭后 45 分钟'));
+});
+test('version 2 upgrade preserves existing signed document snapshots',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'jinlin-v2-'));
+  try{
+    let db=openDatabase(dir);db.exec(`
+      INSERT INTO users(id,username,name,password,role,created_at) VALUES('u','user','旧账号','hash','parent','2026-01-01');
+      INSERT INTO policies(id,organization,contact,documents,hash,created_at,created_by) VALUES('p','机构','联系','[]','hash','2026-01-01','u');
+      INSERT INTO slots(id,date,start,end,capacity) VALUES('s','2026-01-01','09:00','10:00',1);
+      INSERT INTO appointments(id,user_id,slot_id,profile,policy_id,signature,evidence_hash,request_key,created_at,updated_at,signed_documents)
+        VALUES('a','u','s','{}','p','original-signature','hash','old-request','2026-01-01','2026-01-01','[{"text":"历史已签内容"}]');
+      DROP TABLE morning_requests; DROP TABLE morning_versions; ALTER TABLE media DROP COLUMN purpose; PRAGMA user_version=2;
+    `);db.close();db=openDatabase(dir);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,3);
+    const a=db.prepare('SELECT * FROM appointments WHERE id=?').get('a');assert.equal(a.signature,'original-signature');assert.equal(JSON.parse(a.signed_documents)[0].text,'历史已签内容');
+    assert.equal(db.prepare('SELECT count(*) n FROM morning_versions').get().n,0);db.close();
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });

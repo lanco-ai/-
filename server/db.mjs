@@ -9,7 +9,7 @@ export function openDatabase(dataDir) {
   const db = new DatabaseSync(join(dir, 'jinlin.sqlite'), { timeout: 5000 });
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version > 2) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
+  if (version > 3) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE users (
@@ -93,6 +93,29 @@ export function openDatabase(dataDir) {
   if (version < 2) db.exec(`BEGIN IMMEDIATE;
     ALTER TABLE appointments ADD COLUMN signed_documents TEXT;
     PRAGMA user_version=2;
+    COMMIT;`);
+  if (version < 3) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE media ADD COLUMN purpose TEXT NOT NULL DEFAULT 'growth';
+    CREATE TABLE morning_versions (
+      id TEXT PRIMARY KEY, appointment_id TEXT NOT NULL REFERENCES appointments(id),
+      revision INTEGER NOT NULL, lock INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL CHECK(status IN ('draft','submitted')),
+      profile TEXT NOT NULL, service_date TEXT NOT NULL,
+      ask TEXT NOT NULL, look TEXT NOT NULL, touch TEXT NOT NULL, inspect TEXT NOT NULL, doctor TEXT NOT NULL,
+      author_id TEXT NOT NULL REFERENCES users(id), author_name TEXT NOT NULL,
+      source_media_id TEXT REFERENCES media(id), source TEXT NOT NULL DEFAULT 'daily',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, submitted_at TEXT,
+      content_hash TEXT, parent_signature TEXT, confirmed_by TEXT REFERENCES users(id), confirmed_at TEXT,
+      UNIQUE(appointment_id,revision)
+    );
+    CREATE INDEX morning_appointment ON morning_versions(appointment_id,revision);
+    CREATE TABLE morning_requests (
+      user_id TEXT NOT NULL REFERENCES users(id), request_key TEXT NOT NULL,
+      appointment_id TEXT NOT NULL REFERENCES appointments(id), operation TEXT NOT NULL,
+      payload_hash TEXT NOT NULL, version_id TEXT NOT NULL REFERENCES morning_versions(id), response TEXT NOT NULL,
+      PRIMARY KEY(user_id,request_key)
+    );
+    PRAGMA user_version=3;
     COMMIT;`);
   return db;
 }

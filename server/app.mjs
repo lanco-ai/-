@@ -1,3 +1,4 @@
+import { morningHandler } from './morning.mjs';
 import { fillAgreement } from './agreement.mjs';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -123,6 +124,7 @@ export function createApp(options = {}) {
     await pipeline(createReadStream(path,{start,end}),res);
   }
 
+  const handleMorning=morningHandler({db,body,appointment,identify,requireUser,json,limiter});
   const server=createServer(async(req,res)=>{
     const requestId=randomUUID();
     res.setHeader('X-Content-Type-Options','nosniff');
@@ -185,6 +187,7 @@ export function createApp(options = {}) {
         res.setHeader('Set-Cookie',cookie('',0));return json(res,{ok:true});
       }
       if(path.startsWith('/api/'))requireUser(user);
+      if(await handleMorning(req,res,url,user))return;
       if(method==='GET'&&path==='/api/bootstrap'){
         const rows=user.role==='parent'?all('SELECT * FROM appointments WHERE user_id=? ORDER BY created_at DESC',user.id)
           :user.role==='teacher'?all('SELECT * FROM appointments WHERE teacher_id=? ORDER BY created_at DESC',user.id)
@@ -311,7 +314,7 @@ export function createApp(options = {}) {
         const title=text(b.title,'动态标题',80),content=text(b.text,'老师记录',3000),diet=text(b.diet||'','饮食',1000,false),nap=text(b.nap||'','午睡',500,false),mood=text(b.mood||'','情绪',500,false);
         const media=b.media||[];check(Array.isArray(media)&&media.length<=8&&new Set(media).size===media.length,400,'最多添加 8 个不同媒体文件');
         transaction(db,()=>{
-          for(const id of media){const m=get('SELECT * FROM media WHERE id=?',String(id));check(m&&m.appointment_id===a.id&&m.uploader_id===user.id&&!get('SELECT 1 FROM growth_media WHERE media_id=?',id),400,'媒体文件不属于本次预约或已使用');}
+          for(const id of media){const m=get('SELECT * FROM media WHERE id=?',String(id));check(m&&m.appointment_id===a.id&&m.uploader_id===user.id&&m.purpose==='growth'&&!get('SELECT 1 FROM growth_media WHERE media_id=?',id),400,'媒体文件不属于本次预约或已使用');}
           const result=run('INSERT INTO growth(appointment_id,teacher_id,occurred_at,title,text,diet,nap,mood,created_at) VALUES(?,?,?,?,?,?,?,?,?)',a.id,user.id,new Date(instant).toISOString(),title,content,diet,nap,mood,stamp());
           for(const id of media)run('INSERT INTO growth_media(growth_id,media_id) VALUES(?,?)',Number(result.lastInsertRowid),id);
           audit(db,user.id,'growth.create',String(result.lastInsertRowid));
@@ -321,7 +324,8 @@ export function createApp(options = {}) {
         requireUser(user,['teacher','admin']);limiter('upload:'+user.id,30,3600000);
         const a=appointment(m[1],user,true);check(['confirmed','completed'].includes(a.status),409,'确认预约后才能上传');
         const allowed={'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp','video/mp4':'.mp4','video/webm':'.webm'};
-        const mime=req.headers['content-type'],ext=allowed[mime];check(ext,415,'仅支持 PNG、JPEG、WebP 图片和 MP4、WebM 视频');
+        const purpose=url.searchParams.get('purpose')||'growth';check(['growth','morning'].includes(purpose),400,'上传用途不正确');if(purpose==='morning')requireUser(user,['admin']);
+        const mime=req.headers['content-type'],ext=allowed[mime];check(ext,415,'仅支持 PNG、JPEG、WebP 图片和 MP4、WebM 视频');if(purpose==='morning')check(mime.startsWith('image/'),415,'原表附件只支持图片');
         const max=mime.startsWith('image/')?10*1024*1024:50*1024*1024;
         check(!req.headers['content-encoding'],415,'不支持压缩上传');
         check(Number(req.headers['content-length']||0)<=max,413,'图片最大 10MB，视频最大 50MB');
@@ -337,16 +341,16 @@ export function createApp(options = {}) {
             :mime==='video/mp4'?header.toString('ascii',4,8)==='ftyp':header.subarray(0,4).equals(Buffer.from('1a45dfa3','hex'));
           check(size>32&&valid,415,'文件内容与格式不匹配');
           // Recheck after streaming: permissions or appointment status may have changed.
-          const latestUser=get('SELECT * FROM users WHERE id=? AND active=1',user.id);requireUser(latestUser,['teacher','admin']);
+          const latestUser=get('SELECT * FROM users WHERE id=? AND active=1',user.id);requireUser(latestUser,purpose==='morning'?['admin']:['teacher','admin']);
           const latest=appointment(a.id,latestUser,true);check(['confirmed','completed'].includes(latest.status),409,'预约状态已变化');
-          run('INSERT INTO media(id,appointment_id,uploader_id,filename,mime,bytes,created_at) VALUES(?,?,?,?,?,?,?)',id,a.id,user.id,filename,mime,size,stamp());
+          run('INSERT INTO media(id,appointment_id,uploader_id,filename,mime,bytes,created_at,purpose) VALUES(?,?,?,?,?,?,?,?)',id,a.id,user.id,filename,mime,size,stamp(),purpose);
           complete=true;return json(res,{id,url:'/api/media/'+id,mime},201);
         }finally{uploads--;if(!complete)await unlink(file).catch(()=>{});}
       }
       if(['GET','HEAD'].includes(method)&&(m=/^\/api\/media\/([\w-]+)$/.exec(path))){
         const media=get('SELECT * FROM media WHERE id=?',m[1]);check(media,404,'媒体不存在');
         appointment(media.appointment_id,user);
-        if(user.role==='parent')check(get('SELECT 1 FROM growth_media WHERE media_id=?',media.id),404,'媒体尚未发布');
+        if(user.role==='parent')check(media.purpose==='morning'?get("SELECT 1 FROM morning_versions WHERE source_media_id=? AND status='submitted'",media.id):get('SELECT 1 FROM growth_media WHERE media_id=?',media.id),404,'媒体尚未发布');
         return await serveFile(req,res,join(dataDir,'uploads',media.filename),media.mime,true);
       }
       if(path.startsWith('/api/admin/'))requireUser(user,['admin']);
