@@ -9,7 +9,7 @@ export function openDatabase(dataDir) {
   const db = new DatabaseSync(join(dir, 'jinlin.sqlite'), { timeout: 5000 });
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version > 1) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
+  if (version > 2) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE users (
@@ -90,6 +90,10 @@ export function openDatabase(dataDir) {
     PRAGMA user_version=1;
     COMMIT;
   `);
+  if (version < 2) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE appointments ADD COLUMN signed_documents TEXT;
+    PRAGMA user_version=2;
+    COMMIT;`);
   return db;
 }
 

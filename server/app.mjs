@@ -1,6 +1,7 @@
+import { fillAgreement } from './agreement.mjs';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { stat, open, unlink } from 'node:fs/promises';
 import { resolve, join, extname, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -14,7 +15,8 @@ const PUBLIC = fileURLToPath(new URL('../public/', import.meta.url));
 const TYPES = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8',
   '.css':'text/css; charset=utf-8', '.png':'image/png', '.jpg':'image/jpeg', '.webp':'image/webp',
   '.ico':'image/x-icon', '.webm':'video/webm', '.mp4':'video/mp4' };
-const DOC_NAMES = ['入户/托育服务协议', '数据及隐私保密协议', '入托健康/信息登记表'];
+const DOC_NAMES = ['近邻托育入户协议', '婴幼儿发育测评数据保密协议', '入托健康/信息登记表'];
+const MATERIALS = JSON.parse(readFileSync(new URL('./materials.json',import.meta.url),'utf8'));
 const sessionMs = 12 * 60 * 60 * 1000;
 
 export function createApp(options = {}) {
@@ -128,7 +130,7 @@ export function createApp(options = {}) {
     res.setHeader('X-Frame-Options','DENY');
     res.setHeader('Cache-Control','no-store');
     res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
-    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if(production)res.setHeader('Strict-Transport-Security','max-age=31536000');
     try {
       const url=new URL(req.url,origin),path=url.pathname,method=req.method;
@@ -217,9 +219,10 @@ export function createApp(options = {}) {
           check(slot&&slot.enabled&&Date.parse(`${slot.date}T${slot.start}:00+08:00`)>Date.now(),409,'该时段不可预约，请重新选择');
           check(slotView(slot).remaining>0,409,'该时段已约满，请选择其他时段');
           check(!get("SELECT 1 FROM appointments WHERE user_id=? AND slot_id=? AND status IN ('pending','confirmed','completed')",user.id,slot.id),409,'你已预约该时段');
-          const evidence=hash(JSON.stringify({profile,slot:{id:slot.id,date:slot.date,start:slot.start,end:slot.end},policyHash:p.hash,signatureHash:hash(signature),created,user:user.id}));
-          run(`INSERT INTO appointments(id,user_id,slot_id,profile,policy_id,signature,evidence_hash,request_key,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)`,id,user.id,slot.id,JSON.stringify(profile),p.id,signature,evidence,key,created,created);
+          const signedDocuments=p.documents.map(d=>({...d,text:fillAgreement(d.text,{...profile,date:slot.date},p.organization)}));
+          const evidence=hash(JSON.stringify({signedDocuments,profile,slot:{id:slot.id,date:slot.date,start:slot.start,end:slot.end},policyHash:p.hash,signatureHash:hash(signature),created,user:user.id}));
+          run(`INSERT INTO appointments(id,user_id,slot_id,profile,policy_id,signature,evidence_hash,request_key,created_at,updated_at,signed_documents)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,id,user.id,slot.id,JSON.stringify(profile),p.id,signature,evidence,key,created,created,JSON.stringify(signedDocuments));
           run('INSERT INTO profiles(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data',user.id,JSON.stringify(profile));
           run('DELETE FROM drafts WHERE user_id=?',user.id);audit(db,user.id,'appointment.create',id);
         });
@@ -228,7 +231,7 @@ export function createApp(options = {}) {
       let m;
       if(method==='GET'&&(m=/^\/api\/appointments\/([\w-]+)\/agreement$/.exec(path))){
         const a=appointment(m[1],user);const p=get('SELECT * FROM policies WHERE id=?',a.policy_id);
-        return json(res,{appointment:appointmentView(a),documents:JSON.parse(p.documents),organization:p.organization,
+        return json(res,{appointment:appointmentView(a),documents:JSON.parse(a.signed_documents||p.documents),organization:p.organization,
           policyId:p.id,policyHash:p.hash,signature:a.signature,evidenceHash:a.evidence_hash,confirmedAt:a.created_at});
       }
       if(method==='PATCH'&&(m=/^\/api\/appointments\/([\w-]+)$/.exec(path))){
@@ -347,6 +350,7 @@ export function createApp(options = {}) {
         return await serveFile(req,res,join(dataDir,'uploads',media.filename),media.mime,true);
       }
       if(path.startsWith('/api/admin/'))requireUser(user,['admin']);
+      if(method==='GET'&&path==='/api/admin/materials')return json(res,MATERIALS);
       if(method==='POST'&&path==='/api/admin/teachers'){
         limiter('create-teacher:'+user.id,10,3600000);const b=await body(req,5000);
         const account=username(b.username),name=text(b.name,'老师姓名',30),password=await passwordHash(b.password);
@@ -376,6 +380,7 @@ export function createApp(options = {}) {
         const b=await body(req,300000),organization=text(b.organization,'服务机构名称',100),contact=text(b.contact,'联系及隐私事务方式',200);
         check(Array.isArray(b.documents)&&b.documents.length===3,400,'请填写三份正式文件');
         const documents=b.documents.map((d,i)=>({title:DOC_NAMES[i],text:text(d.text,DOC_NAMES[i],20000)}));
+        if(documents.some(d=>d.text.includes('不拍照、不录像')||d.text.includes('{{teacher}}')))check(b.reviewAcknowledged===true,400,'请先核对入户拍摄限制、测评采集范围及待分配教师说明');
         check(documents.every(d=>d.text.length>=30),400,'请提供完整协议正文（至少 30 字）');
         const id=randomUUID(),digest=hash(JSON.stringify({organization,contact,documents}));
         transaction(db,()=>{

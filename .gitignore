@@ -9,3 +9,7 @@ backups/
 *.log
 coverage/
 .DS_Store
+
+*.private.json
+private-materials/
+*.docx

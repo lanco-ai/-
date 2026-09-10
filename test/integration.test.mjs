@@ -42,12 +42,23 @@ test('real multi-user workflow, authorization, persistence and operational bound
     await t.test('admin publishes versioned policies; CSRF and origin enforced',async()=>{
       assert.equal((await call('admin','/admin/policies','POST',{}, {'X-CSRF-Token':'bad'})).status,403);
       assert.equal((await call('admin','/admin/policies','POST',{}, {Origin:'https://evil.invalid'})).status,403);
-      policy=await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'服务电话 010-12345678',documents:[0,1,2].map(i=>({text:`协议 ${i}：本文件用于自动化测试，包含机构确认的服务安排、信息处理和健康登记说明，家长确认后提交预约。`}))});
+      policy=await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'服务电话 010-12345678',documents:[0,1,2].map(i=>({text:`协议 ${i}：本文件用于自动化测试，包含机构确认的服务安排、信息处理和健康登记说明，家长确认后提交预约。宝宝：{{baby}}；家长：{{parent}}；电话：{{phone}}。`}))});
     });
     for(const [who,name]of [['parent1','家长一'],['parent2','家长二']])await ok(who,'/register','POST',{username:who,password:'Parent-test-password-123',name,policyId:policy.id,consent:true});
+    await t.test('private source materials require admin and candidates require explicit review',async()=>{
+      assert.equal((await call('none','/admin/materials')).status,401);
+      assert.equal((await call('parent1','/admin/materials')).status,403);
+      const materials=await ok('admin','/admin/materials');
+      assert.equal(materials.agreements.length,2);assert.equal(materials.activities.length,3);
+      assert.ok(materials.activities.every(a=>a.paragraphs.some(p=>p==='六、活动观察与评价')));
+      assert.equal((await call('admin','/admin/policies','POST',{organization:'机构',contact:'联系机构',documents:[...materials.agreements,{text:'健康信息登记与本次预约的健康照护注意事项核对，请家长确认宝宝健康信息完整且准确。'}]})).status,400);
+      assert.equal((await fetch(base+'/server/materials.json')).status,404);
+      policy=await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'测试联系渠道',reviewAcknowledged:true,documents:[...materials.agreements,{text:'健康信息登记与本次预约的健康照护注意事项核对，请家长确认宝宝健康信息完整且准确。'}]});
+    });
     const teacher=await ok('admin','/admin/teachers','POST',{username:'teacher1',password:'Teacher-test-password-123',name:'老师一'});
     await ok('admin','/admin/teachers','POST',{username:'teacher2',password:'Teacher-test-password-123',name:'老师二'});
     for(const who of ['teacher1','teacher2'])await ok(who,'/login','POST',{username:who,password:'Teacher-test-password-123'});
+    assert.equal((await call('teacher1','/admin/materials')).status,403);
     const profile={baby:'宝宝甲',age:'24',gender:'女',allergy:'有',allergyNote:'鸡蛋',notes:'',parent:'家长一',phone:'13800000000',emergency:'李先生 13900000000'};
     await t.test('server validates profile and isolates profiles',async()=>{
       assert.equal((await call('parent1','/profile','PUT',{...profile,age:'-1'})).status,400);
@@ -80,7 +91,11 @@ test('real multi-user workflow, authorization, persistence and operational bound
       assert.equal((await ok('teacher1','/bootstrap')).appointments.length,1);
       assert.equal((await ok('teacher2','/bootstrap')).appointments.length,0);
       await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'服务电话 010-12345678',documents:[0,1,2].map(i=>({text:`新版 ${i}：本文件是后续发布的新协议，更新了机构确认的服务安排、信息处理和健康登记说明。历史签署不被替换。`}))});
-      assert.equal((await ok('parent1','/appointments/'+appointment.id+'/agreement')).policyId,policy.id);
+      const signed=await ok('parent1','/appointments/'+appointment.id+'/agreement');assert.equal(signed.policyId,policy.id);
+      assert.ok(signed.documents[0].text.includes(profile.baby));assert.ok(signed.documents[0].text.includes('待分配（签署时）'));assert.ok(!signed.documents[0].text.includes('{{baby}}'));
+      await ok('parent1','/profile','PUT',{...profile,baby:'后来修改的档案'});
+      assert.deepEqual((await ok('parent1','/appointments/'+appointment.id+'/agreement')).documents,signed.documents);
+      await ok('parent1','/profile','PUT',profile);
     });
     await t.test('real uploads, unshared files protected, growth private, video byte ranges',async()=>{
       const uploaded=await ok('teacher1','/upload/'+appointment.id,'POST',png(),{'Content-Type':'image/png'});
