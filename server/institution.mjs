@@ -1,7 +1,9 @@
 import {check,text} from './security.mjs';
 import {stamp,audit,transaction} from './db.mjs';
+import {readFileSync} from 'node:fs';
+const supplied=JSON.parse(readFileSync(new URL('./institution-content.json',import.meta.url),'utf8'));
 export function institutionHandler({db,body,json,identify,requireUser}){
-  const current=()=>JSON.parse(db.prepare("SELECT value FROM settings WHERE key='institution'").get()?.value||'{"revision":0,"intro":"","team":[],"environment":[],"notices":[]}');
+  const current=()=>JSON.parse(db.prepare("SELECT value FROM settings WHERE key='institution'").get()?.value||JSON.stringify({...supplied,revision:0}));
   function picture(value){
     if(!value)return '';check(typeof value==='string'&&value.length<=700000,400,'每张图片最大 500KB');
     const m=/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(value);check(m,400,'请上传 PNG、JPEG 或 WebP 图片');
@@ -9,6 +11,7 @@ export function institutionHandler({db,body,json,identify,requireUser}){
     check(m[1]==='png'?b.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')):m[1]==='jpeg'?b.subarray(0,3).equals(Buffer.from('ffd8ff','hex')):b.toString('ascii',0,4)==='RIFF'&&b.toString('ascii',8,12)==='WEBP',400,'图片内容与格式不符');return value;
   }
   return async(req,res,url,user)=>{
+    if(url.pathname==='/api/institution/source'&&req.method==='GET'){requireUser(user,['admin']);json(res,supplied);return true;}
     if(url.pathname!=='/api/institution')return false;
     if(req.method==='GET'){requireUser(user);json(res,current());return true;}
     check(req.method==='PUT',405,'不支持此操作');const b=await body(req,12000000);user=identify(req);requireUser(user,['admin']);
