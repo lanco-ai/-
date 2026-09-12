@@ -47,6 +47,14 @@ test('real multi-user workflow, authorization, persistence and operational bound
       assert.equal((await fetch(base+'/server/materials.json')).status,404);
       policy=await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'测试联系渠道',reviewAcknowledged:true,documents:[...materials.agreements,{text:'健康信息登记与本次预约的健康照护注意事项核对，请家长确认宝宝健康信息完整且准确。'}]});
     });
+    await t.test('institution content is editable only by admin, validates images and rejects stale edits',async()=>{
+      const initial=await ok('parent1','/institution');assert.equal(initial.intro,'');
+      assert.equal((await call('parent1','/institution','PUT',{})).status,403);
+      const data={revision:0,intro:'测试机构介绍',team:[{name:'公开老师',title:'测试师资介绍',intro:'介绍',image:''}],environment:[{caption:'测试环境',image:'data:image/png;base64,'+png().toString('base64')}],notices:[{title:'测试公告',text:'本周服务安排'}]};
+      const saved=await ok('admin','/institution','PUT',data);assert.equal(saved.revision,1);assert.equal((await ok('parent1','/institution')).notices[0].title,'测试公告');
+      assert.equal((await call('admin','/institution','PUT',data)).status,409);
+      assert.equal((await call('admin','/institution','PUT',{...data,revision:1,environment:[{caption:'异常',image:'data:image/svg+xml;base64,abc'}]})).status,400);
+    });
     const teacher=await ok('admin','/admin/teachers','POST',{username:'teacher1',password:'Teacher-test-password-123',name:'老师一'});
     await ok('admin','/admin/teachers','POST',{username:'teacher2',password:'Teacher-test-password-123',name:'老师二'});
     for(const who of ['teacher1','teacher2'])await ok(who,'/login','POST',{username:who,password:'Teacher-test-password-123'});
@@ -112,7 +120,13 @@ test('real multi-user workflow, authorization, persistence and operational bound
     let post;
     await t.test('shared community, server-assigned identities, idempotent likes and favorites',async()=>{
       post=await ok('parent1','/posts','POST',{text:'今天进步了一点点',tag:'成长日常',name:'伪装管理员',role:'admin'});
-      assert.equal((await ok('parent2','/posts')).posts[0].name,'家长一');
+      assert.equal((await ok('parent1','/posts?mine=1')).posts[0].name,'家长一');assert.equal((await ok('parent2','/posts')).posts.length,0);
+      assert.equal(post.moderation,'pending');
+      assert.equal((await call('parent2','/posts/'+post.id)).status,404);
+      assert.equal((await call('parent1','/staff/posts')).status,403);
+      assert.equal((await call('parent1','/posts/'+post.id+'/comments','POST',{text:'待审不可评论'})).status,409);
+      const pending=(await ok('teacher1','/staff/posts')).posts.find(p=>p.id===post.id);assert.ok(pending);
+      await ok('teacher1','/staff/posts/'+post.id+'/review','POST',{status:'approved',note:'',version:pending.reviewVersion});
       await ok('teacher1','/posts/'+post.id+'/comments','POST',{text:'很棒的进步，继续耐心陪伴。',role:'parent'});
       const p=await ok('parent1','/posts/'+post.id);assert.equal(p.comments[0].role,'teacher');
       await ok('parent2','/posts/'+post.id+'/like','PUT',{active:true});await ok('parent2','/posts/'+post.id+'/like','PUT',{active:true});
@@ -120,6 +134,15 @@ test('real multi-user workflow, authorization, persistence and operational bound
       await ok('parent1','/favorites/article:0','PUT',{active:true});await ok('parent1','/favorites/resource:0','PUT',{active:true});
       assert.equal((await ok('parent1','/bootstrap')).favorites.length,2);assert.deepEqual((await ok('parent2','/bootstrap')).favorites,[]);
       assert.equal((await call('parent2','/posts/'+post.id,'DELETE',{})).status,403);
+    });
+    await t.test('teachers can take down posts and parents see the review result privately',async()=>{
+      let p=(await ok('teacher1','/staff/posts?status=approved')).posts.find(p=>p.id===post.id);assert.ok(p);
+      assert.equal((await call('teacher1','/staff/posts/'+p.id+'/review','POST',{status:'rejected',note:'',version:p.reviewVersion})).status,400);
+      await ok('teacher1','/staff/posts/'+p.id+'/review','POST',{status:'rejected',note:'请补充问题内容',version:p.reviewVersion});
+      assert.equal((await call('parent2','/posts/'+p.id)).status,404);assert.equal((await ok('parent1','/posts?mine=1')).posts[0].reviewNote,'请补充问题内容');
+      assert.equal((await call('teacher2','/staff/posts/'+p.id+'/review','POST',{status:'approved',note:'',version:p.reviewVersion})).status,409);
+      p=(await ok('teacher1','/staff/posts?status=rejected')).posts.find(p=>p.id===post.id);
+      await ok('teacher1','/staff/posts/'+p.id+'/review','POST',{status:'approved',note:'',version:p.reviewVersion});
     });
     await t.test('password changes and staff suspension revoke sessions',async()=>{
       const oldCookie=clients.parent2.cookie;await ok('parent2','/password','POST',{oldPassword:'Parent-test-password-123',password:'Changed-password-12345'});

@@ -1,3 +1,4 @@
+import { institutionHandler } from './institution.mjs';
 import { morningHandler } from './morning.mjs';
 import { fillAgreement } from './agreement.mjs';
 import { createServer } from 'node:http';
@@ -89,7 +90,7 @@ export function createApp(options = {}) {
     const author=get('SELECT name,role FROM users WHERE id=?',p.user_id);
     const reply=get(`SELECT c.*,u.name,u.role FROM comments c JOIN users u ON u.id=c.user_id
       WHERE c.post_id=? AND u.role IN ('teacher','admin') ORDER BY c.id DESC LIMIT 1`,p.id);
-    return {id:p.id,text:p.text,tag:p.tag,name:author.name,role:author.role,mine:p.user_id===user.id,
+    return {id:p.id,moderation:p.moderation,reviewNote:p.user_id===user.id||user.role!=='parent'?p.review_note:'',reviewVersion:p.review_version,text:p.text,tag:p.tag,name:author.name,role:author.role,mine:p.user_id===user.id,
       time:p.created_at,likes:get('SELECT count(*) n FROM likes WHERE post_id=?',p.id).n,
       liked:!!get('SELECT 1 FROM likes WHERE post_id=? AND user_id=?',p.id,user.id),
       commentCount:get('SELECT count(*) n FROM comments WHERE post_id=?',p.id).n,
@@ -124,6 +125,7 @@ export function createApp(options = {}) {
     await pipeline(createReadStream(path,{start,end}),res);
   }
 
+  const handleInstitution=institutionHandler({db,body,json,identify,requireUser});
   const handleMorning=morningHandler({db,body,appointment,identify,requireUser,json,limiter});
   const server=createServer(async(req,res)=>{
     const requestId=randomUUID();
@@ -149,7 +151,7 @@ export function createApp(options = {}) {
         }
       }
       if(method==='GET'&&path==='/api/health')return json(res,{ok:!!get('SELECT 1 ok').ok});
-      if(method==='GET'&&path==='/api/session')return json(res,{user:publicUser(user),csrf:user?.csrf||null,policy:currentPolicy()});
+      if(method==='GET'&&path==='/api/session')return json(res,{user:publicUser(user),csrf:user?.csrf||null,favorites:user?all('SELECT item FROM favorites WHERE user_id=?',user.id).map(r=>r.item):[],policy:currentPolicy()});
       if(method==='POST'&&['/api/register','/api/login'].includes(path)){
         limiter('auth-ip:'+ip,30,15*60000);
         check(authWork<4,429,'登录服务繁忙，请稍后重试');authWork++;
@@ -188,6 +190,7 @@ export function createApp(options = {}) {
       }
       if(path.startsWith('/api/'))requireUser(user);
       if(await handleMorning(req,res,url,user))return;
+      if(await handleInstitution(req,res,url,user))return;
       if(method==='GET'&&path==='/api/bootstrap'){
         const rows=user.role==='parent'?all('SELECT * FROM appointments WHERE user_id=? ORDER BY created_at DESC',user.id)
           :user.role==='teacher'?all('SELECT * FROM appointments WHERE teacher_id=? ORDER BY created_at DESC',user.id)
@@ -261,20 +264,37 @@ export function createApp(options = {}) {
         if(b.active)run('INSERT OR IGNORE INTO favorites(user_id,item) VALUES(?,?)',user.id,item);
         else run('DELETE FROM favorites WHERE user_id=? AND item=?',user.id,item);return json(res,{ok:true});
       }
+      if(method==='GET'&&path==='/api/staff/posts'){
+        requireUser(user,['teacher','admin']);const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);
+        check(Number.isSafeInteger(before)&&before>0,400,'分页参数无效');
+        const filter=url.searchParams.get('status')||'pending';check(['pending','approved','rejected'].includes(filter),400,'审核状态不正确');
+        const rows=all('SELECT * FROM posts WHERE hidden=0 AND moderation=? AND id<? ORDER BY id DESC LIMIT 21',filter,before);
+        return json(res,{posts:rows.slice(0,20).map(p=>postView(p,user)),next:rows.length>20?rows[19].id:null});
+      }
+      if(method==='POST'&&(m=/^\/api\/staff\/posts\/(\d+)\/review$/.exec(path))){
+        const b=await body(req,3000),reviewer=identify(req);requireUser(reviewer,['teacher','admin']);
+        const p=get('SELECT * FROM posts WHERE id=? AND hidden=0',Number(m[1]));check(p,404,'帖子不存在');
+        check(['approved','rejected'].includes(b.status),400,'请选择通过或退回');
+        const note=text(b.note||'','审核说明',300,b.status==='rejected');
+        if(p.moderation===b.status&&p.review_note===note)return json(res,{ok:true});
+        check(b.version===p.review_version,409,'帖子已由其他老师处理，请刷新');
+        run('UPDATE posts SET moderation=?,review_note=?,review_version=review_version+1,reviewed_by=?,reviewed_at=? WHERE id=?',b.status,note,reviewer.id,stamp(),p.id);
+        audit(db,reviewer.id,'post.review.'+b.status,String(p.id));return json(res,{ok:true});
+      }
       if(method==='GET'&&path==='/api/posts'){
         const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);check(Number.isSafeInteger(before)&&before>0,400,'分页参数无效');
         const mine=url.searchParams.get('mine')==='1';
         const rows=mine?all('SELECT * FROM posts WHERE hidden=0 AND id<? AND user_id=? ORDER BY id DESC LIMIT 21',before,user.id)
-          :all('SELECT * FROM posts WHERE hidden=0 AND id<? ORDER BY id DESC LIMIT 21',before);
+          :all("SELECT * FROM posts WHERE hidden=0 AND moderation='approved' AND id<? ORDER BY id DESC LIMIT 21",before);
         return json(res,{posts:rows.slice(0,20).map(p=>postView(p,user)),next:rows.length>20?rows[19].id:null});
       }
       if(method==='POST'&&path==='/api/posts'){
         limiter('post:'+user.id,10,60000);const b=await body(req,15000);
-        const result=run('INSERT INTO posts(user_id,text,tag,created_at) VALUES(?,?,?,?)',user.id,text(b.text,'留言',2000),text(b.tag||'','话题标签',30,false),stamp());
-        return json(res,{id:Number(result.lastInsertRowid)},201);
+        const result=run('INSERT INTO posts(user_id,text,tag,created_at,moderation) VALUES(?,?,?,?,?)',user.id,text(b.text,'留言',2000),text(b.tag||'','话题标签',30,false),stamp(),user.role==='parent'?'pending':'approved');
+        return json(res,{id:Number(result.lastInsertRowid),moderation:user.role==='parent'?'pending':'approved'},201);
       }
       if((m=/^\/api\/posts\/(\d+)(?:\/(comments|like))?$/.exec(path))){
-        const p=get('SELECT * FROM posts WHERE id=? AND hidden=0',Number(m[1]));check(p,404,'留言不存在或已隐藏');
+        const p=get('SELECT * FROM posts WHERE id=? AND hidden=0',Number(m[1]));check(p&&(p.moderation==='approved'||p.user_id===user.id||user.role!=='parent'),404,'留言不存在或尚未公开');
         if(method==='GET'&&!m[2]){
           const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);check(Number.isSafeInteger(before)&&before>0,400,'分页参数无效');
           const comments=all(`SELECT c.id,c.text,c.created_at time,u.name,u.role FROM comments c JOIN users u ON c.user_id=u.id
@@ -282,11 +302,11 @@ export function createApp(options = {}) {
           return json(res,{post:postView(p,user),comments:comments.slice(0,20),next:comments.length>20?comments[19].id:null});
         }
         if(method==='POST'&&m[2]==='comments'){
-          limiter('comment:'+user.id,20,60000);const b=await body(req,8000);
+          limiter('comment:'+user.id,20,60000);const b=await body(req,8000);check(get("SELECT 1 FROM posts WHERE id=? AND hidden=0 AND moderation='approved'",p.id),409,'帖子尚未通过审核或已下架');
           run('INSERT INTO comments(post_id,user_id,text,created_at) VALUES(?,?,?,?)',p.id,user.id,text(b.text,'评论',1000),stamp());return json(res,{ok:true},201);
         }
         if(method==='PUT'&&m[2]==='like'){
-          const b=await body(req,1000);check(typeof b.active==='boolean',400,'点赞状态不正确');
+          const b=await body(req,1000);check(get("SELECT 1 FROM posts WHERE id=? AND hidden=0 AND moderation='approved'",p.id),409,'帖子尚未通过审核或已下架');check(typeof b.active==='boolean',400,'点赞状态不正确');
           if(b.active)run('INSERT OR IGNORE INTO likes(post_id,user_id) VALUES(?,?)',p.id,user.id);
           else run('DELETE FROM likes WHERE post_id=? AND user_id=?',p.id,user.id);return json(res,{ok:true});
         }

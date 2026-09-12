@@ -9,7 +9,7 @@ export function openDatabase(dataDir) {
   const db = new DatabaseSync(join(dir, 'jinlin.sqlite'), { timeout: 5000 });
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version > 3) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
+  if (version > 4) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE users (
@@ -116,6 +116,15 @@ export function openDatabase(dataDir) {
       PRIMARY KEY(user_id,request_key)
     );
     PRAGMA user_version=3;
+    COMMIT;`);
+  if (version < 4) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE posts ADD COLUMN moderation TEXT NOT NULL DEFAULT 'approved';
+    ALTER TABLE posts ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN review_version INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE posts ADD COLUMN reviewed_by TEXT REFERENCES users(id);
+    ALTER TABLE posts ADD COLUMN reviewed_at TEXT;
+    CREATE INDEX posts_moderation ON posts(moderation,id);
+    PRAGMA user_version=4;
     COMMIT;`);
   return db;
 }
