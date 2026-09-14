@@ -19,6 +19,7 @@ test('real multi-user workflow, authorization, persistence and operational bound
   app.server.listen(0,'127.0.0.1');await once(app.server,'listening');let base=`http://127.0.0.1:${app.server.address().port}`;
   const clients={};
   async function call(who,path,method='GET',data,extra={}){
+    if(data&&!(data instanceof Buffer)){if(path==='/admin/policies'||path==='/admin/slots')data={serviceType:'home',...data};if(path==='/appointments')data={serviceType:'home',address:'测试用入户地址',signatures:[{agreed:true,signature:data.signature},{agreed:true,signature:data.signature}],...data};}
     const c=clients[who]||{},headers={Origin:origin,...(c.cookie?{Cookie:c.cookie}:{}),...(c.csrf?{'X-CSRF-Token':c.csrf}:{}),...extra};
     if(data!==undefined&&!(data instanceof Buffer))headers['Content-Type']='application/json';
     const r=await fetch(base+'/api'+path,{method,headers,body:data===undefined?undefined:data instanceof Buffer?data:JSON.stringify(data)});

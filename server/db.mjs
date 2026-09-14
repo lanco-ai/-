@@ -9,7 +9,7 @@ export function openDatabase(dataDir) {
   const db = new DatabaseSync(join(dir, 'jinlin.sqlite'), { timeout: 5000 });
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version > 4) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
+  if (version > 5) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE users (
@@ -125,6 +125,21 @@ export function openDatabase(dataDir) {
     ALTER TABLE posts ADD COLUMN reviewed_at TEXT;
     CREATE INDEX posts_moderation ON posts(moderation,id);
     PRAGMA user_version=4;
+    COMMIT;`);
+  if (version < 5) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE slots ADD COLUMN service_type TEXT;
+    ALTER TABLE policies ADD COLUMN service_type TEXT;
+    ALTER TABLE appointments ADD COLUMN service_type TEXT;
+    ALTER TABLE appointments ADD COLUMN address TEXT NOT NULL DEFAULT '';
+    ALTER TABLE appointments ADD COLUMN signatures TEXT;
+    CREATE TABLE service_reviews(appointment_id TEXT PRIMARY KEY REFERENCES appointments(id), user_id TEXT NOT NULL REFERENCES users(id), rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), text TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE consultations(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), teacher_id TEXT REFERENCES users(id), category TEXT NOT NULL, status TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE INDEX consultations_owner ON consultations(user_id,updated_at);
+    CREATE INDEX consultations_teacher ON consultations(teacher_id,updated_at);
+    CREATE TABLE consultation_messages(id TEXT PRIMARY KEY, consultation_id TEXT NOT NULL REFERENCES consultations(id), user_id TEXT NOT NULL REFERENCES users(id), text TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE consultation_media(id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES consultation_messages(id), filename TEXT NOT NULL UNIQUE, mime TEXT NOT NULL);
+    CREATE TABLE consultation_requests(user_id TEXT NOT NULL REFERENCES users(id), request_key TEXT NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(user_id,request_key));
+    PRAGMA user_version=5;
     COMMIT;`);
   return db;
 }

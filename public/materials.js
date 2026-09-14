@@ -2,8 +2,8 @@ let importedPhotos=[],importedUrls=[];
 function clearImportedPhotos(){for(const u of importedUrls)URL.revokeObjectURL(u);importedUrls=[];importedPhotos=[];}
 function fillAgreement(template,profile,organization){
   // Agreements are signed before teacher allocation. Never substitute a later assignment into a signed document.
-  const values={organization:organization||'',baby:profile.baby,age:profile.age,parent:profile.parent,phone:profile.phone,date:profile.date,teacher:'待分配（签署时）'};
-  return String(template).replace(/\{\{(organization|baby|age|parent|phone|date|teacher)\}\}/g,(_,key)=>String(values[key]??'待填写'));
+  const values={organization:organization||'',baby:profile.baby,age:profile.age,parent:profile.parent,phone:profile.phone,date:profile.date,address:profile.address,teacher:'待分配（签署时）'};
+  return String(template).replace(/\{\{(organization|baby|age|parent|phone|date|address|teacher)\}\}/g,(_,key)=>String(values[key]??'待填写'));
 }
 function showServiceInfo(){modal('了解普惠托育',`<p class="note">以下为机构提供的托育介绍及服务发展建议，其中提到的监控、医育结合等不代表本平台已提供这些服务；具体以机构实际安排为准。</p><div class="material-reading">${MATERIAL_CONTENT.serviceParagraphs.map(p=>`<p>${esc(p)}</p>`).join('')}</div>`);}
 function materialChapters(id){

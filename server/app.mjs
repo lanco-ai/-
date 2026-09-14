@@ -1,3 +1,4 @@
+import { consultationHandler } from './consultation.mjs';
 import { institutionHandler } from './institution.mjs';
 import { morningHandler } from './morning.mjs';
 import { fillAgreement } from './agreement.mjs';
@@ -36,8 +37,8 @@ export function createApp(options = {}) {
   let authWork = 0;
   const publicUser = u => u ? ({id:u.id, name:u.name, username:u.username, role:u.role}) : null;
 
-  function currentPolicy() {
-    const key = get("SELECT value FROM settings WHERE key='policy'");
+  function currentPolicy(type) {
+    const key = get('SELECT value FROM settings WHERE key=?',type?'policy:'+type:'policy');
     if (!key) return null;
     const p = get('SELECT * FROM policies WHERE id=?', key.value);
     return {...p, documents:JSON.parse(p.documents)};
@@ -78,7 +79,7 @@ export function createApp(options = {}) {
   function appointmentView(a) {
     const slot=get('SELECT * FROM slots WHERE id=?',a.slot_id);
     const teacher=a.teacher_id?get('SELECT name FROM users WHERE id=?',a.teacher_id):null;
-    return {...JSON.parse(a.profile),id:a.id,userId:a.user_id,slotId:a.slot_id,date:slot.date,
+    return {...JSON.parse(a.profile),serviceType:a.service_type,address:a.address,id:a.id,userId:a.user_id,slotId:a.slot_id,date:slot.date,
       time:`${slot.start}–${slot.end}`,status:a.status,teacherId:a.teacher_id,teacherName:teacher?.name||'',
       staffNote:a.staff_note,confirmedAt:a.created_at,updatedAt:a.updated_at};
   }
@@ -125,6 +126,7 @@ export function createApp(options = {}) {
     await pipeline(createReadStream(path,{start,end}),res);
   }
 
+  const handleConsultation=consultationHandler({db,body,json,identify,requireUser,appointment,dataDir,limiter});
   const handleInstitution=institutionHandler({db,body,json,identify,requireUser});
   const handleMorning=morningHandler({db,body,appointment,identify,requireUser,json,limiter});
   const server=createServer(async(req,res)=>{
@@ -138,7 +140,7 @@ export function createApp(options = {}) {
     if(production)res.setHeader('Strict-Transport-Security','max-age=31536000');
     try {
       const url=new URL(req.url,origin),path=url.pathname,method=req.method;
-      const user=identify(req);
+      let user=identify(req);
       const ip=trustProxy?(req.headers['x-real-ip']||req.socket.remoteAddress):req.socket.remoteAddress;
       const writes=!['GET','HEAD','OPTIONS'].includes(method);
       if(path.startsWith('/api/')){
@@ -189,6 +191,7 @@ export function createApp(options = {}) {
         res.setHeader('Set-Cookie',cookie('',0));return json(res,{ok:true});
       }
       if(path.startsWith('/api/'))requireUser(user);
+      if(await handleConsultation(req,res,url,user))return;
       if(await handleMorning(req,res,url,user))return;
       if(await handleInstitution(req,res,url,user))return;
       if(method==='GET'&&path==='/api/bootstrap'){
@@ -197,7 +200,7 @@ export function createApp(options = {}) {
           :all('SELECT * FROM appointments ORDER BY created_at DESC');
         return json(res,{user:publicUser(user),profile:JSON.parse(get('SELECT data FROM profiles WHERE user_id=?',user.id)?.data||'{}'),
           draft:JSON.parse(get('SELECT data FROM drafts WHERE user_id=?',user.id)?.data||'{}'),appointments:rows.map(appointmentView),
-          favorites:all('SELECT item FROM favorites WHERE user_id=?',user.id).map(r=>r.item),policy:currentPolicy(),
+          favorites:all('SELECT item FROM favorites WHERE user_id=?',user.id).map(r=>r.item),policy:currentPolicy(),policies:{home:currentPolicy('home'),center:currentPolicy('center')},
           slots:all('SELECT * FROM slots WHERE date>=? ORDER BY date,start',chinaDate()).map(slotView),
           teachers:user.role==='admin'?all("SELECT id,name,username,active FROM users WHERE role='teacher' ORDER BY name"):[]});
       }
@@ -208,27 +211,33 @@ export function createApp(options = {}) {
       }
       if(method==='PUT'&&path==='/api/draft'){
         requireUser(user,['parent']);const b=await body(req,15000);const d={};
-        for(const k of ['baby','age','gender','allergy','allergyNote','notes','parent','phone','emergency','slotId'])
+        for(const k of ['baby','age','gender','allergy','allergyNote','notes','parent','phone','emergency','slotId','serviceType','address'])
           if(typeof b[k]==='string')d[k]=b[k].slice(0,1000);
         run('INSERT INTO drafts(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data',user.id,JSON.stringify(d));return json(res,{ok:true});
       }
       if(method==='POST'&&path==='/api/appointments'){
         requireUser(user,['parent']);limiter('book:'+user.id,20,3600000);
-        const b=await body(req),profile=profileData(b.profile),signature=signatureData(b.signature);
+        const b=await body(req,1000000),profile=profileData(b.profile);user=identify(req);requireUser(user,['parent']);
+        check(['home','center'].includes(b.serviceType),400,'请选择服务类型');
+        const address=b.serviceType==='home'?text(b.address,'入户详细地址',300):'';
+        check(Array.isArray(b.signatures)&&b.signatures.length===2&&b.signatures.every(v=>v?.agreed===true),400,'请分别阅读、确认并签署两份协议');
+        const signatures=b.signatures.map(v=>({signature:signatureData(v.signature),agreed:true})),signature=signatures[0].signature;
         const key=text(b.requestKey,'请求编号',80);check(/^[a-zA-Z0-9-]{16,80}$/.test(key),400,'请求编号不正确');
         const existing=get('SELECT * FROM appointments WHERE user_id=? AND request_key=?',user.id,key);
         if(existing)return json(res,{appointment:appointmentView(existing)});
-        const p=currentPolicy();check(p&&p.id===b.policyId&&b.agreed===true,409,'协议已更新，请重新阅读并确认');
+        const p=currentPolicy(b.serviceType);check(p&&p.id===b.policyId&&b.agreed===true,409,'协议已更新，请重新阅读并确认');
         const id=randomUUID(),created=stamp();
         transaction(db,()=>{
           const slot=get('SELECT * FROM slots WHERE id=?',String(b.slotId||''));
           check(slot&&slot.enabled&&Date.parse(`${slot.date}T${slot.start}:00+08:00`)>Date.now(),409,'该时段不可预约，请重新选择');
+          check(slot.service_type===b.serviceType,409,'时段服务类型不匹配，请重新选择');
           check(slotView(slot).remaining>0,409,'该时段已约满，请选择其他时段');
           check(!get("SELECT 1 FROM appointments WHERE user_id=? AND slot_id=? AND status IN ('pending','confirmed','completed')",user.id,slot.id),409,'你已预约该时段');
-          const signedDocuments=p.documents.map(d=>({...d,text:fillAgreement(d.text,{...profile,date:slot.date},p.organization)}));
-          const evidence=hash(JSON.stringify({signedDocuments,profile,slot:{id:slot.id,date:slot.date,start:slot.start,end:slot.end},policyHash:p.hash,signatureHash:hash(signature),created,user:user.id}));
-          run(`INSERT INTO appointments(id,user_id,slot_id,profile,policy_id,signature,evidence_hash,request_key,created_at,updated_at,signed_documents)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,id,user.id,slot.id,JSON.stringify(profile),p.id,signature,evidence,key,created,created,JSON.stringify(signedDocuments));
+          signatures.forEach((v,i)=>Object.assign(v,{documentIndex:i,confirmedAt:created,policyId:p.id}));
+          const signedDocuments=p.documents.map(d=>({...d,text:fillAgreement(d.text,{...profile,address,date:slot.date},p.organization)}));
+          const evidence=hash(JSON.stringify({signedDocuments,profile,slot:{id:slot.id,date:slot.date,start:slot.start,end:slot.end},policyHash:p.hash,serviceType:b.serviceType,address,signatures:signatures.map(v=>({...v,signature:hash(v.signature)})),created,user:user.id}));
+          run(`INSERT INTO appointments(id,user_id,slot_id,profile,policy_id,signature,evidence_hash,request_key,created_at,updated_at,signed_documents,service_type,address,signatures)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,id,user.id,slot.id,JSON.stringify(profile),p.id,signature,evidence,key,created,created,JSON.stringify(signedDocuments),b.serviceType,address,JSON.stringify(signatures));
           run('INSERT INTO profiles(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data',user.id,JSON.stringify(profile));
           run('DELETE FROM drafts WHERE user_id=?',user.id);audit(db,user.id,'appointment.create',id);
         });
@@ -238,7 +247,7 @@ export function createApp(options = {}) {
       if(method==='GET'&&(m=/^\/api\/appointments\/([\w-]+)\/agreement$/.exec(path))){
         const a=appointment(m[1],user);const p=get('SELECT * FROM policies WHERE id=?',a.policy_id);
         return json(res,{appointment:appointmentView(a),documents:JSON.parse(a.signed_documents||p.documents),organization:p.organization,
-          policyId:p.id,policyHash:p.hash,signature:a.signature,evidenceHash:a.evidence_hash,confirmedAt:a.created_at});
+          policyId:p.id,policyHash:p.hash,signatures:a.signatures?JSON.parse(a.signatures):null,signature:a.signature,evidenceHash:a.evidence_hash,confirmedAt:a.created_at});
       }
       if(method==='PATCH'&&(m=/^\/api\/appointments\/([\w-]+)$/.exec(path))){
         const b=await body(req,3000),a=appointment(m[1],user);let status=a.status,teacher=a.teacher_id,note=a.staff_note;
@@ -250,7 +259,7 @@ export function createApp(options = {}) {
             const t=get("SELECT * FROM users WHERE id=? AND role='teacher' AND active=1",String(b.teacherId));check(t,400,'请选择有效老师');teacher=t.id;}
           if(b.status){const allowed={pending:['confirmed','rejected'],confirmed:['completed','cancelled'],completed:[],cancelled:[],rejected:[]};
             check(allowed[a.status].includes(b.status),409,'预约状态已变化，请刷新');
-            if(b.status==='confirmed')check(teacher,400,'请先分配照护老师');status=b.status;
+            if(b.status==='confirmed')check(teacher,400,'请先分配照护老师');if(b.status==='completed'){const slot=get('SELECT * FROM slots WHERE id=?',a.slot_id);check(Date.parse(slot.date+'T'+slot.end+':00+08:00')<=Date.now(),409,'服务时段结束后才可标记完成');}status=b.status;
           }
           if(b.note!==undefined)note=text(b.note,'处理说明',500,false);
           if(['rejected','cancelled'].includes(status))check(note,400,'请填写处理原因');
@@ -388,28 +397,31 @@ export function createApp(options = {}) {
         transaction(db,()=>{run('UPDATE users SET active=? WHERE id=?',b.active?1:0,m[1]);run('DELETE FROM sessions WHERE user_id=?',m[1]);audit(db,user.id,'teacher.active',m[1]);});return json(res,{ok:true});
       }
       if(method==='POST'&&path==='/api/admin/slots'){
-        const b=await body(req,2000);check(dateValid(b.date)&&b.date>=chinaDate(),400,'请选择今天或之后的有效日期');
+        const b=await body(req,2000);check(['home','center'].includes(b.serviceType),400,'请选择时段服务类型');check(dateValid(b.date)&&b.date>=chinaDate(),400,'请选择今天或之后的有效日期');
         check(typeof b.start==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(b.start)&&typeof b.end==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(b.end)&&b.start<b.end,400,'请设置正确的起止时间');
         check(Number.isInteger(b.capacity)&&b.capacity>=1&&b.capacity<=100,400,'名额应为 1–100');
         check(!get('SELECT 1 FROM slots WHERE date=? AND start<? AND end>?',b.date,b.end,b.start),409,'该日期已有重叠时段，请修改现有时段');
-        const id=randomUUID();run('INSERT INTO slots(id,date,start,end,capacity) VALUES(?,?,?,?,?)',id,b.date,b.start,b.end,b.capacity);audit(db,user.id,'slot.create',id);return json(res,{id},201);
+        const id=randomUUID();run('INSERT INTO slots(id,date,start,end,capacity,service_type) VALUES(?,?,?,?,?,?)',id,b.date,b.start,b.end,b.capacity,b.serviceType);audit(db,user.id,'slot.create',id);return json(res,{id},201);
       }
       if(method==='PATCH'&&(m=/^\/api\/admin\/slots\/([\w-]+)$/.exec(path))){
         const b=await body(req,1000),s=get('SELECT * FROM slots WHERE id=?',m[1]);check(s,404,'时段不存在');
         check(typeof b.enabled==='boolean',400,'时段状态不正确');check(Number.isInteger(b.capacity)&&b.capacity>=1&&b.capacity<=100,400,'名额应为 1–100');
         const used=s.capacity-slotView(s).remaining;check(b.capacity>=used,409,'名额不能少于已预约人数');
-        run('UPDATE slots SET enabled=?,capacity=? WHERE id=?',b.enabled?1:0,b.capacity,s.id);audit(db,user.id,'slot.update',s.id);return json(res,{ok:true});
+        const type=b.serviceType===undefined?s.service_type:b.serviceType;check(['home','center'].includes(type),400,'请为旧时段指定服务类型');check(!s.service_type||type===s.service_type||!get('SELECT 1 FROM appointments WHERE slot_id=?',s.id),409,'已有预约的时段不可更改服务类型');
+        run('UPDATE slots SET enabled=?,capacity=?,service_type=? WHERE id=?',b.enabled?1:0,b.capacity,type,s.id);audit(db,user.id,'slot.update',s.id);return json(res,{ok:true});
       }
       if(method==='POST'&&path==='/api/admin/policies'){
         const b=await body(req,300000),organization=text(b.organization,'服务机构名称',100),contact=text(b.contact,'联系及隐私事务方式',200);
+        check(['home','center'].includes(b.serviceType),400,'请选择协议适用服务类型');
         check(Array.isArray(b.documents)&&b.documents.length===3,400,'请填写三份正式文件');
-        const documents=b.documents.map((d,i)=>({title:DOC_NAMES[i],text:text(d.text,DOC_NAMES[i],20000)}));
+        const documents=b.documents.map((d,i)=>({title:b.serviceType==='home'?DOC_NAMES[i]:['入托或到店服务协议','入托或到店数据保密协议',DOC_NAMES[2]][i],text:text(d.text,DOC_NAMES[i],20000)}));
         if(documents.some(d=>d.text.includes('不拍照、不录像')||d.text.includes('{{teacher}}')))check(b.reviewAcknowledged===true,400,'请先核对入户拍摄限制、测评采集范围及待分配教师说明');
         check(documents.every(d=>d.text.length>=30),400,'请提供完整协议正文（至少 30 字）');
         const id=randomUUID(),digest=hash(JSON.stringify({organization,contact,documents}));
         transaction(db,()=>{
-          run('INSERT INTO policies(id,organization,contact,documents,hash,created_at,created_by) VALUES(?,?,?,?,?,?,?)',id,organization,contact,JSON.stringify(documents),digest,stamp(),user.id);
+          run('INSERT INTO policies(id,organization,contact,documents,hash,created_at,created_by,service_type) VALUES(?,?,?,?,?,?,?,?)',id,organization,contact,JSON.stringify(documents),digest,stamp(),user.id,b.serviceType);
           run("INSERT INTO settings(key,value) VALUES('policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",id);
+          run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value','policy:'+b.serviceType,id);
           audit(db,user.id,'policy.publish',id);
         });return json(res,{id},201);
       }

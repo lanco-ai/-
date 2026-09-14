@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
-const source=readFileSync(new URL('../public/content.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/modules.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/morning.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/materials.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/app.js',import.meta.url),'utf8').split('function shell(')[0];
+const source=readFileSync(new URL('../public/content.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/modules.js',import.meta.url),'utf8')+readFileSync(new URL('../public/journeys.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/morning.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/materials.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/app.js',import.meta.url),'utf8').split('function shell(')[0];
 test('expired session clears private state and signature before another account logs in',async()=>{
  const context=vm.createContext({document:{addEventListener(){}},clearTimeout,setTimeout,fetch:async()=>({ok:false,status:401,json:async()=>({error:'expired'})}),go:()=>{}});
  vm.runInContext(source,context);

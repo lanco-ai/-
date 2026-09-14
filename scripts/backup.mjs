@@ -16,7 +16,7 @@ try{
   try{
     if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('备份数据库校验失败');
     await mkdir(join(target,'uploads'),{mode:0o700});
-    for(const row of snapshot.prepare('SELECT filename FROM media').all()){
+    for(const row of snapshot.prepare('SELECT filename FROM media UNION ALL SELECT filename FROM consultation_media').all()){
       if(!/^[a-f0-9-]+\.(png|jpg|webp|mp4|webm)$/.test(row.filename))throw new Error('媒体文件名异常');
       await copyFile(join(source,'uploads',row.filename),join(target,'uploads',row.filename));
     }
