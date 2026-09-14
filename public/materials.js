@@ -43,3 +43,12 @@ function bindPrivateImport(){
     }catch(e){clearImportedPhotos();target.textContent='';input.value='';toast(e.message||'无法读取资料包');}
   };
 }
+
+// General reading never receives a booking or personal profile.
+function generalAgreementText(template,organization){
+  return String(template).replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(_,key)=>key==='organization'?(organization||'机构尚未填写'):key==='teacher'?'预约时确认，未分配时显示待分配':'预约时填写');
+}
+function privacyContent(){
+  const actions=!state.user?'<button class="btn" data-privacy-route="login">登录后预约签署</button>':state.user.role==='parent'?'<button class="btn" data-privacy-route="booking">去预约签署</button><button class="btn secondary" data-privacy-route="personal/agreements">查看我的已签协议</button>':'<button class="btn" data-privacy-route="staff">进入工作台</button>';
+  return `<p class="note">通用阅读版本，预约时填写资料并签署。发布协议不代表家长已经签署；本窗口不展示个人资料或签名。</p><div class="form-actions">${actions}</div>${state.policy?`<p>${esc(state.policy.organization)} · ${esc(state.policy.contact)}</p>${state.policy.documents.map(d=>`<section class="agreement-body"><h3>${esc(d.title)}</h3><div class="policy-text">${esc(generalAgreementText(d.text,state.policy.organization))}</div></section>`).join('')}`:'<p>机构尚未发布正式协议，请联系管理员。</p>'}`;
+}

@@ -109,3 +109,12 @@ test('health registration template fills all current booking fields identically 
  assert.match(fillAgreement(template,{...profile,allergy:'无',allergyNote:''},'机构'),/无已申报过敏史/);
  assert.equal(fillAgreement('{{notes}}',{...profile,notes:'{{phone}}'},'机构'),'{{phone}}');
 });
+
+test('general reading substitutes labels without personal data and offers role-specific signing routes',()=>{
+ const context=vm.createContext({state:{},esc:s=>String(s).replaceAll('<','&lt;')});vm.runInContext(readFileSync(new URL('../public/materials.js',import.meta.url),'utf8'),context);
+ const policy={organization:'近邻机构',contact:'机构渠道',documents:[{title:'协议',text:'{{organization}} {{baby}} {{parent}} {{teacher}} {{unknown}} {{ notes }}'}]};context.state={policy,user:null,profile:{baby:'不能显示的宝宝'},draft:{parent:'不能显示的家长'}};
+ let html=vm.runInContext('privacyContent()',context);assert.ok(!html.includes('{{'));assert.match(html,/近邻机构/);assert.match(html,/预约时确认/);assert.ok(!html.includes('不能显示'));assert.match(html,/data-privacy-route="login"/);assert.ok(!html.includes('data-privacy-route="booking"'));
+ context.state.user={role:'parent'};html=vm.runInContext('privacyContent()',context);assert.match(html,/data-privacy-route="booking"/);assert.match(html,/data-privacy-route="personal\/agreements"/);
+ for(const role of ['teacher','admin']){context.state.user={role};html=vm.runInContext('privacyContent()',context);assert.match(html,/data-privacy-route="staff"/);assert.ok(!html.includes('data-privacy-route="booking"'));}
+ assert.equal(policy.documents[0].text,'{{organization}} {{baby}} {{parent}} {{teacher}} {{unknown}} {{ notes }}');context.state.policy=null;assert.match(vm.runInContext('privacyContent()',context),/尚未发布/);
+});

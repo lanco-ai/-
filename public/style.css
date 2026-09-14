@@ -22,3 +22,4 @@ body{background:#FFF9F7}.care-banner{position:relative;overflow:hidden;backgroun
 
 /* Shared rose theme; semantic feedback stays distinct. */
 input,select,textarea{accent-color:var(--primary)}input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--primary);outline-offset:2px}input::placeholder,textarea::placeholder{color:#806D76;opacity:1}.error,.required{color:#B03D35}.invalid{border-color:#B03D35!important}.success-symbol{background:#EAF3EC;color:#28704E}.review-stars{color:#996021}.rating label:has(input:checked){background:var(--pale);border-color:var(--primary)}.login-visual:after{background:linear-gradient(0deg,#4D293DD9,transparent 75%)}.login-copy p{color:#FFF3F4}.footer{color:var(--muted)}.signature{background:#FFFCFB}.signature .hint{color:var(--muted)}
+.signature canvas:focus-visible{outline:3px solid var(--primary);outline-offset:3px;border-radius:10px}

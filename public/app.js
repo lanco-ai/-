@@ -104,7 +104,7 @@ function staffPage(tab='appointments'){
 
 function modal(title,html){returnFocus=document.activeElement;$('#modal').innerHTML=`<button class="close" data-action="close" aria-label="关闭弹窗">×</button><h2>${title}</h2>${html}`;if(!$('#modal').open)$('#modal').showModal();}
 $('#modal').addEventListener('close',()=>{$$('#modal video').forEach(v=>v.pause());returnFocus?.focus();});
-function privacy(){modal('隐私与服务协议',state.policy?`<p>${esc(state.policy.organization)} · ${esc(state.policy.contact)}</p>${state.policy.documents.map(d=>`<section class="agreement-body"><h3>${esc(d.title)}</h3><div class="policy-text">${esc(d.text)}</div></section>`).join('')}`:'<p>机构尚未发布正式协议，请联系管理员。</p>');}
+function privacy(){modal('隐私与服务协议',privacyContent());}
 async function render(){
   clearImportedPhotos();clearMorningImport();const seq=++generation;let parts=location.hash.replace(/^#\/?/,'').split('/'),page=parts[0]||(state.user?'home':'login');
   if(!state.user&&!['login','register'].includes(page)){go('login');return;}
@@ -177,6 +177,8 @@ document.addEventListener('click',async e=>{
     if(d.action==='menu'){$('.nav').classList.toggle('open');b.setAttribute('aria-expanded',$('.nav').classList.contains('open'));}
     else if(d.action==='retry')await boot();
     else if(d.action==='privacy')privacy();
+    else if(d.privacyRoute){$('#modal').close();go(d.privacyRoute);}
+    else if(d.action==='goto-signature'){const canvas=$('#signature');if(canvas){canvas.scrollIntoView({block:'center',behavior:'instant'});canvas.focus({preventScroll:true});}}
     else if(d.action==='close')$('#modal').close();
     else if(d.action==='logout'){await flushDraft();await api('/logout','POST',{});clearSession();go('login');}
     else if(d.action==='service-info'){showServiceInfo();}
