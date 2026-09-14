@@ -1,4 +1,5 @@
 import { consultationHandler } from './consultation.mjs';
+import { gameCoverHandler } from './game-covers.mjs';
 import { institutionHandler } from './institution.mjs';
 import { morningHandler } from './morning.mjs';
 import { fillAgreement } from './agreement.mjs';
@@ -127,6 +128,7 @@ export function createApp(options = {}) {
   }
 
   const handleConsultation=consultationHandler({db,body,json,identify,requireUser,appointment,dataDir,limiter});
+  const handleGameCovers=gameCoverHandler({db,body,json,identify,requireUser});
   const handleInstitution=institutionHandler({db,body,json,identify,requireUser});
   const handleMorning=morningHandler({db,body,appointment,identify,requireUser,json,limiter});
   const server=createServer(async(req,res)=>{
@@ -193,6 +195,7 @@ export function createApp(options = {}) {
       if(path.startsWith('/api/'))requireUser(user);
       if(await handleConsultation(req,res,url,user))return;
       if(await handleMorning(req,res,url,user))return;
+      if(await handleGameCovers(req,res,url,user))return;
       if(await handleInstitution(req,res,url,user))return;
       if(method==='GET'&&path==='/api/bootstrap'){
         const rows=user.role==='parent'?all('SELECT * FROM appointments WHERE user_id=? ORDER BY created_at DESC',user.id)
@@ -328,23 +331,23 @@ export function createApp(options = {}) {
         const condition=user.role==='admin'?'1=1':user.role==='teacher'?'a.teacher_id=?':'a.user_id=?';
         const rows=all(`SELECT g.*,a.profile,u.name teacher_name FROM growth g JOIN appointments a ON a.id=g.appointment_id
           JOIN users u ON u.id=g.teacher_id WHERE ${condition} AND g.id<? ORDER BY g.id DESC LIMIT 21`,...(user.role==='admin'?[]:[user.id]),before);
-        const daily=get(`SELECT g.diet,g.nap,g.mood,g.occurred_at FROM growth g JOIN appointments a ON a.id=g.appointment_id WHERE ${condition} AND date(g.occurred_at,'+8 hours')=? ORDER BY g.occurred_at DESC,g.id DESC LIMIT 1`,...(user.role==='admin'?[]:[user.id]),chinaDate());
+        const daily=get(`SELECT g.game_activity,g.diet,g.nap,g.mood,g.occurred_at FROM growth g JOIN appointments a ON a.id=g.appointment_id WHERE ${condition} AND date(g.occurred_at,'+8 hours')=? ORDER BY g.occurred_at DESC,g.id DESC LIMIT 1`,...(user.role==='admin'?[]:[user.id]),chinaDate());
         return json(res,{daily:daily||null,records:rows.slice(0,20).map(r=>({...r,baby:JSON.parse(r.profile).baby,profile:undefined,
           media:all('SELECT m.id,m.mime FROM media m JOIN growth_media gm ON gm.media_id=m.id WHERE gm.growth_id=?',r.id)
             .map(m=>({...m,url:'/api/media/'+m.id}))})),next:rows.length>20?rows[19].id:null});
       }
       if(method==='POST'&&path==='/api/growth'){
-        requireUser(user,['teacher','admin']);const b=await body(req,20000),a=appointment(String(b.appointmentId),user,true);
+        requireUser(user,['teacher','admin']);const b=await body(req,20000);user=identify(req);requireUser(user,['teacher','admin']);const a=appointment(String(b.appointmentId),user,true);
         check(['confirmed','completed'].includes(a.status),409,'确认预约后才能记录照护动态');
         const occurred=text(b.occurredAt,'记录时间',40);const instant=Date.parse(occurred);
         check(Number.isFinite(instant)&&instant<=Date.now()+60000,400,'记录时间不正确或晚于当前时间');
         const slot=get('SELECT * FROM slots WHERE id=?',a.slot_id);
         check(instant>=Date.parse(`${slot.date}T${slot.start}:00+08:00`)&&instant<=Date.parse(`${slot.date}T${slot.end}:00+08:00`),400,'记录时间须在预约服务时段内');
-        const title=text(b.title,'动态标题',80),content=text(b.text,'老师记录',3000),diet=text(b.diet||'','饮食',1000,false),nap=text(b.nap||'','午睡',500,false),mood=text(b.mood||'','情绪',500,false);
+        const title=text(b.title,'动态标题',80),content=text(b.text,'老师记录',3000),diet=text(b.diet||'','饮食',1000,false),nap=text(b.nap||'','午睡',500,false),mood=text(b.mood||'','情绪',500,false),gameActivity=text(b.gameActivity??'','游戏活动',1000,false);
         const media=b.media||[];check(Array.isArray(media)&&media.length<=8&&new Set(media).size===media.length,400,'最多添加 8 个不同媒体文件');
         transaction(db,()=>{
           for(const id of media){const m=get('SELECT * FROM media WHERE id=?',String(id));check(m&&m.appointment_id===a.id&&m.uploader_id===user.id&&m.purpose==='growth'&&!get('SELECT 1 FROM growth_media WHERE media_id=?',id),400,'媒体文件不属于本次预约或已使用');}
-          const result=run('INSERT INTO growth(appointment_id,teacher_id,occurred_at,title,text,diet,nap,mood,created_at) VALUES(?,?,?,?,?,?,?,?,?)',a.id,user.id,new Date(instant).toISOString(),title,content,diet,nap,mood,stamp());
+          const result=run('INSERT INTO growth(appointment_id,teacher_id,occurred_at,title,text,diet,nap,mood,game_activity,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',a.id,user.id,new Date(instant).toISOString(),title,content,diet,nap,mood,gameActivity,stamp());
           for(const id of media)run('INSERT INTO growth_media(growth_id,media_id) VALUES(?,?)',Number(result.lastInsertRowid),id);
           audit(db,user.id,'growth.create',String(result.lastInsertRowid));
         });return json(res,{ok:true},201);

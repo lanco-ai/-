@@ -62,6 +62,25 @@ test('real multi-user workflow, authorization, persistence and operational bound
     await ok('admin','/admin/teachers','POST',{username:'teacher2',password:'Teacher-test-password-123',name:'老师二'});
     for(const who of ['teacher1','teacher2'])await ok(who,'/login','POST',{username:who,password:'Teacher-test-password-123'});
     assert.equal((await call('teacher1','/admin/materials')).status,403);
+    await t.test('game covers require login and admin edits, reject stale writes, reset and isolate games',async()=>{
+      assert.equal((await call('none','/game-covers')).status,401);
+      const initial=await ok('parent1','/game-covers');assert.equal(Object.keys(initial).length,3);assert.equal(initial['find-toys'].revision,0);
+      const path='/admin/game-covers/find-toys',data={revision:0,image:'data:image/png;base64,'+png().toString('base64')};
+      for(const who of ['parent1','teacher1'])assert.equal((await call(who,path,'PUT',data)).status,403);
+      assert.equal((await call('admin','/admin/game-covers/unknown','PUT',data)).status,404);
+      assert.equal((await call('admin',path,'PUT',{...data,image:'data:image/svg+xml;base64,abc'})).status,400);
+      assert.equal((await call('admin',path,'PUT',{...data,image:'data:image/png;base64,'+Buffer.alloc(100,1).toString('base64')})).status,400);
+      assert.equal((await call('admin',path,'PUT',{...data,image:'data:image/png;base64,'+Buffer.alloc(510*1024).toString('base64')})).status,400);
+      const saved=await ok('admin',path,'PUT',data);assert.equal(saved.revision,1);
+      assert.equal((await ok('parent2','/game-covers'))['find-toys'].image,data.image);
+      assert.deepEqual((await ok('teacher1','/game-covers'))['sort-blocks'],initial['sort-blocks']);
+      assert.equal((await call('admin',path,'PUT',data)).status,409);
+      assert.equal((await call('admin',path,'DELETE',{revision:0})).status,409);
+      assert.equal((await call('teacher1',path,'DELETE',{revision:1})).status,403);
+      const reset=await ok('admin',path,'DELETE',{revision:1});assert.equal(reset.image,'');assert.equal(reset.revision,2);
+      assert.equal((await ok('parent1','/game-covers'))['find-toys'].image,'');
+      await ok('admin',path,'PUT',{...data,revision:2});
+    });
     const profile={baby:'宝宝甲',age:'24',gender:'女',allergy:'有',allergyNote:'鸡蛋',notes:'',parent:'家长一',phone:'13800000000',emergency:'李先生 13900000000'};
     await t.test('server validates profile and isolates profiles',async()=>{
       assert.equal((await call('parent1','/profile','PUT',{...profile,age:'-1'})).status,400);
@@ -112,13 +131,25 @@ test('real multi-user workflow, authorization, persistence and operational bound
       for(const who of ['teacher1','teacher2'])await ok(who,'/login','POST',{username:who,password:'Teacher-test-password-123'});
       await ok('admin','/login','POST',{username:'admin',password:'A-strong-test-password-1'});
       assert.equal((await call('parent1','/growth','POST',{})).status,403);
-      await ok('teacher1','/growth','POST',{appointmentId:appointment.id,occurredAt:new Date(future).toISOString(),title:'绘本阅读',text:'主动指认绘本中的小动物。',diet:'米饭与蔬菜',nap:'平稳',mood:'愉快',media:[uploaded.id]});
+      const growthData={appointmentId:appointment.id,occurredAt:new Date(future).toISOString(),title:'绘本阅读',text:'主动指认绘本中的小动物。',gameActivity:'一起翻翻绘本：指认小动物，宝宝主动翻页。',diet:'米饭与蔬菜',nap:'平稳',mood:'愉快',media:[uploaded.id]};
+      assert.equal((await call('teacher2','/growth','POST',growthData)).status,404);
+      assert.equal((await call('teacher1','/growth','POST',{...growthData,gameActivity:'玩'.repeat(1001)})).status,400);
+      await ok('teacher1','/growth','POST',growthData);
+      const view=await ok('parent1','/growth');assert.equal(view.daily.game_activity,growthData.gameActivity);assert.equal(view.records[0].game_activity,growthData.gameActivity);
+      assert.equal((await ok('parent2','/growth')).daily,null);
+      assert.equal((await ok('teacher2','/growth')).daily,null);
       assert.equal((await ok('parent1','/growth')).records.length,1);
       assert.equal((await ok('parent2','/growth')).records.length,0);
       assert.equal((await ok('teacher2','/growth')).records.length,0);
       const r=await fetch(base+'/api/media/'+uploaded.id,{headers:{Cookie:clients.parent1.cookie,Range:'bytes=0-15'}});
       assert.equal(r.status,206);assert.equal((await r.arrayBuffer()).byteLength,16);assert.match(r.headers.get('cache-control'),/no-store/);
       assert.equal((await fetch(base+'/api/media/'+uploaded.id,{headers:{Cookie:clients.parent2.cookie}})).status,404);
+    });
+    await t.test('latest Beijing-day summary keeps missing game activity empty instead of borrowing earlier text',async()=>{
+      const data={appointmentId:appointment.id,occurredAt:tomorrow+'T10:00:00+08:00',title:'后续照护',text:'未填写游戏的真实照护记录',media:[]};
+      await ok('teacher1','/growth','POST',data);
+      const view=await ok('parent1','/growth');assert.equal(view.daily.game_activity,'');assert.equal(view.records[0].game_activity,'');assert.match(view.records[1].game_activity,/一起翻翻绘本/);
+      assert.equal((await ok('parent2','/growth')).daily,null);
     });
     let post;
     await t.test('shared community, server-assigned identities, idempotent likes and favorites',async()=>{
@@ -163,7 +194,9 @@ test('real multi-user workflow, authorization, persistence and operational bound
         const snapshot=new DatabaseSync(join(target,'jinlin.sqlite'),{readOnly:true});
         try{
           assert.equal(snapshot.prepare('PRAGMA quick_check').get().quick_check,'ok');
-          assert.equal(snapshot.prepare('SELECT count(*) n FROM growth').get().n,1);
+          assert.equal(snapshot.prepare('SELECT count(*) n FROM growth').get().n,2);
+          assert.match(JSON.parse(snapshot.prepare("SELECT value FROM settings WHERE key='game-cover:find-toys'").get().value).image,/^data:image\/png/);
+          assert.match(snapshot.prepare('SELECT game_activity FROM growth').get().game_activity,/一起翻翻绘本/);
           for(const row of snapshot.prepare('SELECT filename FROM media').all())assert.ok((await readFile(join(target,'uploads',row.filename))).length>0);
           assert.equal(JSON.parse(await readFile(join(target,'backup.json'),'utf8')).schema,1);
         }finally{snapshot.close();}
@@ -172,7 +205,9 @@ test('real multi-user workflow, authorization, persistence and operational bound
     await t.test('data survives server restart; no public database or uploads path',async()=>{
       await new Promise(resolve=>app.server.close(resolve));app=createApp({dataDir:dir,origin});app.server.listen(0,'127.0.0.1');await once(app.server,'listening');base=`http://127.0.0.1:${app.server.address().port}`;
       assert.equal((await ok('parent1','/bootstrap')).appointments[0].baby,profile.baby);
-      assert.equal((await ok('parent1','/growth')).records.length,1);
+      assert.equal((await ok('parent1','/growth')).records.length,2);
+      assert.equal((await ok('parent1','/game-covers'))['find-toys'].revision,3);
+      assert.match((await ok('parent1','/growth')).records[1].game_activity,/一起翻翻绘本/);
       assert.equal((await fetch(base+'/server/app.mjs')).status,404);
       assert.equal((await fetch(base+'/var/jinlin.sqlite')).status,404);
       assert.equal((await fetch(base+'/.env')).status,404);

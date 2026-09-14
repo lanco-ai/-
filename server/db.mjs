@@ -9,7 +9,7 @@ export function openDatabase(dataDir) {
   const db = new DatabaseSync(join(dir, 'jinlin.sqlite'), { timeout: 5000 });
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version > 5) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
+  if (version > 6) throw new Error('数据库版本高于当前程序，禁止使用旧版本打开');
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE users (
@@ -140,6 +140,10 @@ export function openDatabase(dataDir) {
     CREATE TABLE consultation_media(id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES consultation_messages(id), filename TEXT NOT NULL UNIQUE, mime TEXT NOT NULL);
     CREATE TABLE consultation_requests(user_id TEXT NOT NULL REFERENCES users(id), request_key TEXT NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(user_id,request_key));
     PRAGMA user_version=5;
+    COMMIT;`);
+  if (version < 6) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE growth ADD COLUMN game_activity TEXT NOT NULL DEFAULT '';
+    PRAGMA user_version=6;
     COMMIT;`);
   return db;
 }
