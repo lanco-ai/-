@@ -49,7 +49,7 @@ test('real multi-user workflow, authorization, persistence and operational bound
       policy=await ok('admin','/admin/policies','POST',{organization:'测试机构',contact:'测试联系渠道',reviewAcknowledged:true,documents:[...materials.agreements,{text:'健康信息登记与本次预约的健康照护注意事项核对，请家长确认宝宝健康信息完整且准确。'}]});
     });
     await t.test('institution content is editable only by admin, validates images and rejects stale edits',async()=>{
-      const initial=await ok('parent1','/institution');assert.match(initial.intro,/校社协同/);assert.equal(initial.team.length,4);assert.equal(initial.notices.length,3);assert.deepEqual(initial.environment,[]);assert.ok(!JSON.stringify(initial).includes('69 月龄'));
+      const initial=await ok('parent1','/institution');assert.match(initial.intro,/社区嵌入式普惠托育服务阵地/);assert.ok(initial.intro.includes('0‑3岁'));assert.ok(initial.intro.includes('线上托育小程序'));assert.equal(initial.team.length,4);assert.equal(initial.notices.length,3);assert.deepEqual(initial.environment,[]);assert.ok(!JSON.stringify(initial).includes('69 月龄'));
       assert.equal((await call('parent1','/institution/source')).status,403);assert.equal((await ok('admin','/institution/source')).team[0].name,'宋老师');
       assert.equal((await call('parent1','/institution','PUT',{})).status,403);
       const data={revision:0,intro:'测试机构介绍',team:[{name:'公开老师',title:'测试师资介绍',intro:'介绍',image:''}],environment:[{caption:'测试环境',image:'data:image/png;base64,'+png().toString('base64')}],notices:[{title:'测试公告',text:'本周服务安排'}]};

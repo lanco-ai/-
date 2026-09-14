@@ -11,11 +11,11 @@ function materialChapters(id){
   return `<section class="card material-intro"><span class="tag">亲子活动章节</span><h2>在陪伴中，发现小小成长</h2>${chapters.map(c=>`<details class="activity-chapter"><summary>${esc(c.title)}</summary><p>${esc(c.intro)}</p><p>具体练习方案正在由机构审核。请结合宝宝当前能力与意愿，由负责老师提供适合的活动安排。</p>${state.user?.role==='admin'?`<button class="textbtn" data-activity-review="${c.id}">查看完整原稿与核对事项</button>`:''}</details>`).join('')}<div class="note"><b>日常陪伴建议</b><p>在安全地垫上，将玩具放在稍远处，鼓励宝宝以自己会的方式探索；留在身边陪伴，关注宝宝的反应。有发育方面的疑问，与儿科医生交流。</p><a class="textbtn" href="https://www.cdc.gov/act-early/milestones/9-months.html" target="_blank" rel="noopener noreferrer">参考：CDC 9 月龄陪伴建议 ↗</a></div></section>`;
 }
 async function loadMaterialPolicies(){
-  const m=await api('/admin/materials');if(!$('#policy-form'))return;
+  const owner=state.user?.id,form=$('#policy-form');if(!form||$('#policy-type')?.value!=='home')return;const m=await api('/admin/materials');if(owner!==state.user?.id||!form.isConnected||$('#policy-type')?.value!=='home')return;
   m.agreements.forEach((d,i)=>{$('#policy-'+i).value=d.text;});
   if(!$('#organization').value)$('#organization').value='近邻托育';
   $('#policy-reviewed').checked=false;
-  $('#policy-review-notes').innerHTML=`<b>候选文本已载入，尚未发布</b>${m.reviewNotes.map(n=>`<p>${esc(n)}</p>`).join('')}<p>双花括号字段由本次预约自动带入，请勿填入固定宝宝或家长信息。第三份登记表保持原样。</p>`;
+  $('#policy-review-notes').innerHTML=`<b>候选文本已载入，尚未发布</b><p>协议来源：${esc(m.agreementSource||'机构提供的协议文档')}</p>${m.reviewNotes.map(n=>`<p>${esc(n)}</p>`).join('')}<p>双花括号字段由本次预约自动带入，请勿填入固定宝宝或家长信息。第三份登记表保持原样。</p>`;
   toast('两份候选协议已载入，请编辑核对后发布');
 }
 async function showActivityReview(id){
