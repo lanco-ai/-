@@ -98,3 +98,14 @@ test('version 5 upgrade preserves old growth and defaults new game activity to e
  db.close();db=openDatabase(dir);assert.equal(db.prepare('SELECT count(*) n FROM growth').get().n,1);db.close();
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('health registration template fills all current booking fields identically without invented health results',()=>{
+ const context=vm.createContext({});vm.runInContext(readFileSync(new URL('../public/material-content.js',import.meta.url),'utf8')+'\n'+readFileSync(new URL('../public/materials.js',import.meta.url),'utf8'),context);
+ const template=vm.runInContext('HEALTH_REGISTRATION_TEMPLATE',context);
+ const profile={baby:'宝宝',age:0,gender:'女',parent:'家长',phone:'13800000000',date:'2026-09-14',allergy:'有',allergyNote:'鸡蛋',notes:'需要沟通饮食',emergency:'紧急联系人'};
+ context.profile=profile;const result=fillAgreement(template,profile,'机构');assert.equal(vm.runInContext("fillAgreement(HEALTH_REGISTRATION_TEMPLATE,profile,'机构')",context),result);
+ for(const value of ['0 个月','女','鸡蛋','需要沟通饮食','紧急联系人','13800000000'])assert.ok(result.includes(value));assert.ok(!result.includes('{{'));
+ assert.match(fillAgreement(template,{...profile,notes:''},'机构'),/特殊注意事项：未填写/);
+ assert.match(fillAgreement(template,{...profile,allergy:'无',allergyNote:''},'机构'),/无已申报过敏史/);
+ assert.equal(fillAgreement('{{notes}}',{...profile,notes:'{{phone}}'},'机构'),'{{phone}}');
+});

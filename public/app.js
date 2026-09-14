@@ -180,6 +180,7 @@ document.addEventListener('click',async e=>{
     else if(d.action==='close')$('#modal').close();
     else if(d.action==='logout'){await flushDraft();await api('/logout','POST',{});clearSession();go('login');}
     else if(d.action==='service-info'){showServiceInfo();}
+    else if(d.action==='load-health-template'){if(state.user?.role==='admin'&&$('#policy-2')){$('#policy-2').value=HEALTH_REGISTRATION_TEMPLATE;$('#policy-reviewed').checked=false;toast('登记表模板已载入，仅替换第三份正文，请核对后发布');}}
     else if(d.action==='load-material-policies'){await loadMaterialPolicies();}
     else if(d.activityReview!==undefined){await showActivityReview(Number(d.activityReview));}
     else if(d.action==='password'){modal('修改密码',`<form id="password-form">${field('oldPassword','原密码','password','')}${field('newPassword','新密码','password','')}<p class="tiny">修改后所有设备均需重新登录。新密码至少 12 位。</p><div class="form-actions"><button class="btn">保存新密码</button></div></form>`);handleForm('#password-form',async()=>{await api('/password','POST',{oldPassword:$('#oldPassword').value,password:$('#newPassword').value});$('#modal').close();clearSession();go('login');toast('密码已修改，请重新登录');});}
